@@ -43,8 +43,14 @@ class model:
         return
     
     def get_accuracy(self, inputs, labels):
-        
-        return
+        if self._comp_type == 'GPU':
+            answers = np.argmax(self.outputs(inputs), axis = 1)
+            correct = np.argmax(cp.array(labels), axis = 1)
+        if self._comp_type == 'CPU':
+            answers = np.argmax(self.outputs(inputs), axis = 1)
+            correct = np.argmax(labels, axis = 1)
+        accuracy = sum([i == j for i, j in zip(answers, correct)])/len(correct)
+        return accuracy
     
     def one2ratio(self, inputs):
         # Returns a vector of 1-2 ratios
@@ -87,8 +93,8 @@ class model:
                 else:
                     shape = (self._layers[i-1].size(), self._layers[i].size())
                 if init_method == 'Xavier':
-                    self._layers[i]._weights = cp.random.normal(0, np.sqrt(3. / sum(shape)), shape)
-                    self._layers[i]._biases = cp.full(self._layers[i].size(), bias_constant)
+                    self._layers[i]._weights = cp.random.normal(0, np.sqrt(3. / sum(shape)), shape, dtype = np.float32)
+                    self._layers[i]._biases = cp.full(self._layers[i].size(), bias_constant, dtype = np.float32)
                 if type(init_method) == float:
                     self._layers[i]._weights = cp.random.normal(0, init_method)
                     self._layers[i]._biases = cp.full(self._layers[i].size(), bias_constant)
@@ -122,11 +128,17 @@ class model:
         if self._layer_type == 'Sparse':
             print('Model is already sparse')
             return
-        for i in range(self._depth):
-            if self._layers[i]._activation_type == 'Relu':
-                self._layers[i] = sparse_relu_layer(size = self._layers[i]._size, weights = csr_matrix(self._layers[i]._weights.transpose()).tocoo(), biases = cp.array(self._layers[i]._biases))
-            if self._layers[i]._activation_type == 'Linear':
-                self._layers[i] = sparse_linear_layer(size = self._layers[i]._size, weights = csr_matrix(self._layers[i]._weights.transpose()).tocoo(), biases = cp.array(self._layers[i]._biases))
-        self._layer_type = 'Sparse'
-        print('Model is now sparse')
-        return
+        if self._comp_type == 'CPU':
+            print('Still have not added that feature')
+            return
+        if self._comp_type == 'GPU':
+            for i in range(self._depth):
+                rows = cp.repeat(cp.arange(self._layers[i]._weights.shape[0]), self._layers[i]._weights.shape[1])
+                columns = cp.tile(cp.arange(self._layers[i]._weights.shape[1]), self._layers[i]._weights.shape[0])
+                if self._layers[i]._activation_type == 'Relu':
+                    self._layers[i] = sparse_relu_layer(size = self._layers[i]._size, weights = csr_matrix(self._layers[i]._weights.transpose()), biases = cp.array(self._layers[i]._biases))
+                if self._layers[i]._activation_type == 'Linear':
+                    self._layers[i] = sparse_linear_layer(size = self._layers[i]._size, weights = csr_matrix(self._layers[i]._weights.transpose()), biases = cp.array(self._layers[i]._biases))
+            self._layer_type = 'Sparse'
+            print('Model is now sparse')
+            return

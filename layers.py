@@ -189,6 +189,8 @@ class sparse_relu_layer:
         self._l2_constant = l2_constant
         self._l1_constant = l1_constant
         self._learning_rate = learning_rate
+        self._rows = self._weights.tocoo().transpose().row
+        self._columns = self._weights.tocoo().transpose().col
     
     @property    
     def get_inputs(self):
@@ -226,15 +228,12 @@ class sparse_relu_layer:
     
     def get_gradients(self, layer_inputs, layer_error):
         grads_shape = self._weights.shape
-        grads_row = self._weights.transpose().row
-        grads_col = self._weights.transpose().col
         layer_error = layer_error*(self._relu.transpose())
         bias_gradients = cp.sum(layer_error, axis = 0)
         previous_layer_error = self._weights.transpose().dot(layer_error.transpose()).transpose()
-        gradient_values = sum(layer_inputs[grads_row,:].transpose()*layer_error[:,grads_col])
-        weight_gradients = coo_matrix((gradient_values, (self._weights.col, self._weights.row)), shape = (grads_shape[1], grads_shape[0]))
-            
-        return weight_gradients.transpose(), bias_gradients, previous_layer_error
+        weight_gradients = sum(layer_inputs[self._rows,:].transpose()*layer_error[:,self._columns])
+           
+        return weight_gradients, bias_gradients, previous_layer_error
 
 class sparse_linear_layer:
     
@@ -254,6 +253,8 @@ class sparse_linear_layer:
         self._l2_constant = l2_constant
         self._l1_constant = l1_constant
         self._learning_rate = learning_rate
+        self._rows = self._weights.transpose().tocoo().row
+        self._columns = self._weights.transpose().tocoo().col
     
     @property    
     def get_inputs(self):
@@ -291,14 +292,11 @@ class sparse_linear_layer:
                
     def get_gradients(self, layer_inputs, layer_error):
         grads_shape = self._weights.shape
-        grads_row = self._weights.transpose().row
-        grads_col = self._weights.transpose().col
         bias_gradients = cp.sum(layer_error, axis = 0)
         previous_layer_error = self._weights.transpose().dot(layer_error.transpose()).transpose()
-        gradient_values = sum(layer_inputs[grads_row,:].transpose()*layer_error[:,grads_col])
-        weight_gradients = coo_matrix((gradient_values, (self._weights.col, self._weights.row)), shape = (grads_shape[1], grads_shape[0]))
-            
-        return weight_gradients.transpose(), bias_gradients, previous_layer_error
+        weight_gradients = sum(layer_inputs[self._rows,:].transpose()*layer_error[:,self._columns])
+           
+        return weight_gradients, bias_gradients, previous_layer_error
 
         
       
