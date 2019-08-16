@@ -125,7 +125,7 @@ class adadad_optimizer:
                         weight_gradients, bias_gradients, error = self._model.layers[-1-i].get_gradients(cp.array(inputs.transpose()), error*(self._model.layers[-1-i]._relu.transpose()))
                 gradients.append((weight_gradients, bias_gradients))
         
-        # Gradients are appended in reverse order, reverse thisto simplify applying training step
+        # Gradients are appended in reverse order, reverse this to simplify applying training step
         gradients.reverse()
         
         return gradients
@@ -139,8 +139,9 @@ class adadad_optimizer:
             for i in range(len(grads)):
                 signs = np.sign(grads[i][0])
                 self._adadad_stats[i] = (cp.sign(self._adadad_stats[i][0]) == signs)*self._adadad_stats[i][0]
-                self._adadad_stats[i] += signs
-        
+                #self._adadad_stats[i] += signs
+                self._adadad_stats[i] += grads[i][0]
+                
         
         if self._model._comp_type == 'CPU':
             for i in range(len(grads)):
@@ -151,8 +152,13 @@ class adadad_optimizer:
         
         for i in range(len(grads)):
             if self._model._layer_type == 'Full':
-                self._model.layers[i]._weights +=  self._learning_rate*grads[i][0]
+                if self._model._comp_type == 'GPU':
+                    #self._model.layers[i]._weights +=  self._learning_rate*grads[i][0]*abs(self._adadad_stats[i])
+                    self._model.layers[i]._weights +=  self._learning_rate*(grads[i][0] + self._adadad_stats[i])
+                if self._model._comp_type == 'CPU':
+                    self._model.layers[i]._weights +=  self._learning_rate*(grads[i][0] + self._adadad_stats[i])
                 self._model.layers[i]._biases += self._learning_rate*grads[i][1]
+                
             if self._model._layer_type == 'Sparse':
                 self._model.layers[i]._weights = (self._model.layers[i]._weights + self._learning_rate*grads[i][0]).tocoo()
                 self._model.layers[i]._biases += self._learning_rate*grads[i][1]

@@ -19,6 +19,7 @@ class full_relu_layer:
         self._l2_constant = l2_constant
         self._l1_constant = l1_constant
         self._learning_rate = learning_rate
+        self._dropout = dropout
         
     def layer_type(self):
         return self._layer_type
@@ -28,9 +29,13 @@ class full_relu_layer:
     
     def activate(self, inputs):
         if self._comp_type == 'GPU':
-            self._dot_product = cp.dot(inputs, self._weights)
+            if self._dropout:
+                self._dot_product = cp.dot(inputs, self._weights*cp.random.binomial(1, 1-self._dropout, size = self._weights.shape,))
+            else:
+                self._dot_product = cp.dot(inputs, self._weights)
         if self._comp_type == 'CPU':
-            # use the @ operator
+            if self._dropout:
+                self._dot_product = inputs@(self._weights*np.random.binomial(1, 1-self._dropout, size = self._weights.shape))
             self._dot_product = inputs@self._weights
         self._add_biases = self._dot_product + self._biases
         self._relu = self._add_biases>0
@@ -105,6 +110,7 @@ class full_linear_layer:
         self._l2_constant = l2_constant
         self._l1_constant = l1_constant
         self._learning_rate = learning_rate
+        self._dropout = dropout
         
     def layer_type(self):
         return self._layer_type
@@ -114,10 +120,13 @@ class full_linear_layer:
     
     def activate(self, inputs):
         if self._comp_type == 'GPU':
-            self._dot_product = cp.dot(inputs, self._weights)
+            if self._dropout:
+                self._dot_product = cp.dot(inputs, self._weights*cp.random.choice([0, 1], size = self._weights.shape, p = [self._dropout, 1-self._dropout]))
+            else:
+                self._dot_product = cp.dot(inputs, self._weights)
         if self._comp_type == 'CPU':
-            # use the @ operator
-            self._dot_product = inputs@self._weights
+            if self._dropout:
+                self._dot_product = inputs@(self._weights*np.random.choice([0, 1], size = self._weights.shape, p = [self._dropout, 1-self._dropout]))
         self._add_biases = self._dot_product + self._biases
         self._outputs = self._add_biases
         return self._outputs
@@ -189,6 +198,7 @@ class sparse_relu_layer:
         self._l2_constant = l2_constant
         self._l1_constant = l1_constant
         self._learning_rate = learning_rate
+        self._dropout = dropout
         self._rows = self._weights.tocoo().transpose().row
         self._columns = self._weights.tocoo().transpose().col
     
@@ -253,6 +263,7 @@ class sparse_linear_layer:
         self._l2_constant = l2_constant
         self._l1_constant = l1_constant
         self._learning_rate = learning_rate
+        self._dropout = dropout
         self._rows = self._weights.transpose().tocoo().row
         self._columns = self._weights.transpose().tocoo().col
     

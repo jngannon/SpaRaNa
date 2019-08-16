@@ -13,6 +13,8 @@ class model:
         self._layers = layers
         # Can set the dropout value for the whole network.
         self._dropout = dropout
+        for layer in self._layers:
+            layer._dropout = self._dropout
         self._comp_type = comp_type
         self._depth = len(layers)
         # Infer layers type from first layer, important here for transposing the input/output
@@ -43,6 +45,8 @@ class model:
         return
     
     def get_accuracy(self, inputs, labels):
+        for layer in self._layers:
+            layer._dropout = None
         if self._comp_type == 'GPU':
             answers = np.argmax(self.outputs(inputs), axis = 1)
             correct = np.argmax(cp.array(labels), axis = 1)
@@ -50,6 +54,8 @@ class model:
             answers = np.argmax(self.outputs(inputs), axis = 1)
             correct = np.argmax(labels, axis = 1)
         accuracy = sum([i == j for i, j in zip(answers, correct)])/len(correct)
+        for layer in self._layers:
+            layer._dropout = self._dropout
         return accuracy
     
     def one2ratio(self, inputs):

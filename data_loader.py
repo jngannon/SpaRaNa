@@ -43,7 +43,10 @@ class loader:
         print('Minibatches: ', self._minibatches)
         return
     
-    def test_set(self):
+    def test_data(self):
         '''This seems pretty pointless until I am loading files directly with this class.'''
-        return self._test_data, self._test_labels
+        return self._test_data
 
+
+    def test_labels(self):
+        return self._test_labels

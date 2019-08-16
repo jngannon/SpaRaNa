@@ -44,6 +44,8 @@ class lobotomizer:
     
     def get_MAAV(self, data):
         ''' MAAV is mean absolutes activated values'''
+        for layer in self._model.layers:
+            layer._dropout = None
         for i in data:
             if self._model._layer_type == 'Sparse':
                 this_layer_inputs = i.transpose()
@@ -68,6 +70,8 @@ class lobotomizer:
         self._weight_stats = [coo_matrix(i) for i in self._weight_stats]
         for i in self._weight_stats:
             i = i/len(data)
+        for layer in self._model.layers:
+            layer._dropout = self._model._dropout
         return
 
     
@@ -105,7 +109,7 @@ class lobotomizer:
                     self._model.layers[i]._weights = cp.sparse.csr_matrix(cpu_coo_matrix)
                 else:
                     # Number of parameters to be removed
-                    remove = int(prune_ratio*self._layer_stats[i].nnz)
+                    remove = int(prune_ratio*self._layer_stats[i].getnnz())
                     if print_stats:
                         print('Pruning ', remove,' parameters from ', cpu_coo_matrix.nnz, ' parameters in layer ', i)
                     # List of indices of parameters to be removed
@@ -115,7 +119,7 @@ class lobotomizer:
                         self._model.layers[i]._weights[self._layer_stats[i].row[j], self._layer_stats[i].col[j]] = 0
         
         if not layers:
-            for i in range(len(self._model.layers)):
+            for i in range(len(self._model.layers)-1):
                 
                 if self._model._layer_type == 'Sparse' and self._model._comp_type == 'GPU':
                     # Copy weight matrix to CPU ram as a COO matrix
