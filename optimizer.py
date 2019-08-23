@@ -11,9 +11,8 @@ class sgd_optimizer:
         self._learning_rate = learning_rate
         self._gradients = []
         self._l2_constant = l2_constant
-        for layer in self._model.layers:
-            layer._l2_constant = self._l2_constant
-        
+        self._l1_constant = l1_constant
+                
     def get_gradients(self, inputs, labels):
         
         outputs = self._model.outputs(inputs)
@@ -60,8 +59,19 @@ class sgd_optimizer:
         grads = self.get_gradients(inputs, labels)
         for i in range(len(grads)):
             if self._model._layer_type == 'Full':
-                self._model.layers[i]._weights +=  + self._learning_rate*grads[i][0]
-                self._model.layers[i]._biases += self._learning_rate*grads[i][1]
+                
+                if self._l2_constant and not self._l1_constant:
+                    self._model.layers[i]._weights += self._learning_rate*grads[i][0] - self._l2_constant/inputs.shape[0]*self._learning_rate*self._model.layers[i]._weights
+                
+                if self._l2_constant and self._l1_constant:
+                    self._model.layers[i]._weights += self._learning_rate*grads[i][0] - self._l2_constant/inputs.shape[0]*self._learning_rate*self._model.layers[i]._weights - self._l1_constant/inputs.shape[0]*self._learning_rate*np.sign(self._model.layers[i]._weights)
+                
+                if self._l1_constant and not self._l1_constant:
+                    self._model.layers[i]._weights += self._learning_rate*grads[i][0] - self._l1_constant/inputs.shape[0]*self._learning_rate*np.sign(self._model.layers[i]._weights)
+                if not self._l1_constant and not self._l2_constant:
+                    self._model.layers[i]._weights += self._learning_rate*grads[i][0]
+                    self._model.layers[i]._biases += self._learning_rate*grads[i][1]
+            
             if self._model._layer_type == 'Sparse':
                 self._model.layers[i]._weights.data += self._learning_rate*grads[i][0]
                 self._model.layers[i]._biases += self._learning_rate*grads[i][1]

@@ -4,7 +4,7 @@ from cupy.sparse import coo_matrix
 
 class full_relu_layer:
     
-    def __init__(self, size, inputs = None, dropout = None, l2_constant = None, l1_constant = None, learning_rate = None):
+    def __init__(self, size, inputs = None, dropout = None, learning_rate = None):
         self._size = size
         self._layer_type = 'Full'
         self._activation_type = 'Relu'
@@ -16,8 +16,6 @@ class full_relu_layer:
         self._outputs = None
         self._comp_type = 'CPU'
         # Regularization parameters, and learning rates can be set for layers individually
-        self._l2_constant = l2_constant
-        self._l1_constant = l1_constant
         self._learning_rate = learning_rate
         self._dropout = dropout
         
@@ -36,7 +34,8 @@ class full_relu_layer:
         if self._comp_type == 'CPU':
             if self._dropout:
                 self._dot_product = inputs@(self._weights*np.random.binomial(1, 1-self._dropout, size = self._weights.shape))
-            self._dot_product = inputs@self._weights
+            else:
+                self._dot_product = inputs@self._weights
         self._add_biases = self._dot_product + self._biases
         self._relu = self._add_biases>0
         self._outputs = self._add_biases*self._relu
@@ -62,22 +61,12 @@ class full_relu_layer:
         if self._comp_type == 'CPU':
             layer_error = layer_error*self._relu
             bias_gradients = np.sum(layer_error, axis = 0)
-            if not self._l2_constant:
-                weight_gradients = layer_inputs.transpose()@(layer_error)
-            if self._l2_constant:
-                weight_gradients = layer_inputs.transpose()@(layer_error) + self._l2_constant/(layer_error.shape[0])*self._weights
-            if self._l1_constant:
-                print('No l1 regularization yet')
-                return
+            weight_gradients = layer_inputs.transpose()@(layer_error)
             previous_layer_error = layer_error@self._weights.transpose()
         if self._comp_type == 'GPU':
             layer_error = layer_error*self._relu
             bias_gradients = cp.sum(layer_error, axis = 0)
-            if not self._l2_constant:
-                weight_gradients = cp.dot(layer_inputs.transpose(), layer_error)
-            if self._l2_constant:
-                weight_gradients = cp.dot(layer_inputs.transpose(), layer_error) + self._l2_constant / (layer_error.shape[0]) * self._weights
-            
+            weight_gradients = cp.dot(layer_inputs.transpose(), layer_error)   
             previous_layer_error = cp.dot(layer_error, self._weights.transpose())
             
         return weight_gradients, bias_gradients, previous_layer_error
@@ -95,7 +84,7 @@ class full_relu_layer:
                 
 class full_linear_layer:
     
-    def __init__(self, size, inputs = None, dropout = None, l2_constant = None, l1_constant = None, learning_rate = None):
+    def __init__(self, size, inputs = None, dropout = None, learning_rate = None):
         self._size = size
         self._layer_type = 'Full'
         self._activation_type = 'Linear'
@@ -107,8 +96,6 @@ class full_linear_layer:
         self._outputs = None
         self._comp_type = 'CPU'
         # Regularization parameters, and learning rates can be set for layers individually
-        self._l2_constant = l2_constant
-        self._l1_constant = l1_constant
         self._learning_rate = learning_rate
         self._dropout = dropout
         
@@ -127,6 +114,8 @@ class full_linear_layer:
         if self._comp_type == 'CPU':
             if self._dropout:
                 self._dot_product = inputs@(self._weights*np.random.choice([0, 1], size = self._weights.shape, p = [self._dropout, 1-self._dropout]))
+            else:
+                self._dot_product = inputs@self._weights
         self._add_biases = self._dot_product + self._biases
         self._outputs = self._add_biases
         return self._outputs
@@ -150,21 +139,11 @@ class full_linear_layer:
         ''' Returns an array for weights, and biases, and one for the previous layer'''
         if self._comp_type == 'CPU':
             bias_gradients = np.sum(layer_error, axis = 0)
-            if not self._l2_constant:
-                weight_gradients = layer_inputs.transpose()@(layer_error)
-            if self._l2_constant:
-                weight_gradients = layer_inputs.transpose()@(layer_error) + self._l2_constant/(layer_error.shape[0])*self._weights
-            if self._l1_constant:
-                print('No l1 regularization yet')
-                return
+            weight_gradients = layer_inputs.transpose()@(layer_error)
             previous_layer_error = layer_error@self._weights.transpose()
         if self._comp_type == 'GPU':
             bias_gradients = cp.sum(layer_error, axis = 0)
-            if not self._l2_constant:
-                weight_gradients = cp.dot(layer_inputs.transpose(), layer_error)
-            if self._l2_constant:
-                weight_gradients = cp.dot(layer_inputs.transpose(), layer_error) + self._l2_constant / (layer_error.shape[0]) * self._weights
-            
+            weight_gradients = cp.dot(layer_inputs.transpose(), layer_error)
             previous_layer_error = cp.dot(layer_error, self._weights.transpose())
             
         return weight_gradients, bias_gradients, previous_layer_error
@@ -182,7 +161,7 @@ class full_linear_layer:
 
 class sparse_relu_layer:
     
-    def __init__(self, size, weights = None, biases = None, inputs = None, dropout = None, l2_constant = None, l1_constant = None, learning_rate = None):
+    def __init__(self, size, weights = None, biases = None, inputs = None, dropout = None, learning_rate = None):
         self._size = size
         self._layer_type = 'Sparse'
         self._activation_type = 'Relu'
@@ -195,12 +174,10 @@ class sparse_relu_layer:
         # Default to running on GPU, if the sparse model isn't going to fit in GPU memory, you were fucked anyway.
         self._comp_type = 'GPU'
         # Regularization parameters, and learning rates can be set for layers individually
-        self._l2_constant = l2_constant
-        self._l1_constant = l1_constant
         self._learning_rate = learning_rate
         self._dropout = dropout
-        self._rows = self._weights.tocoo().transpose().row
-        self._columns = self._weights.tocoo().transpose().col
+        self._rows = None
+        self._columns = None
     
     @property    
     def get_inputs(self):
@@ -236,6 +213,10 @@ class sparse_relu_layer:
     def biases(self):
         return self._biases
     
+    def get_coordinates(self):
+        self._rows = self._weights.tocoo().transpose().row
+        self._columns = self._weights.tocoo().transpose().col
+    
     def get_gradients(self, layer_inputs, layer_error):
         grads_shape = self._weights.shape
         layer_error = layer_error*(self._relu.transpose())
@@ -247,7 +228,7 @@ class sparse_relu_layer:
 
 class sparse_linear_layer:
     
-    def __init__(self, size, weights = None, biases = None, inputs = None, dropout = None, l2_constant = None, l1_constant = None, learning_rate = None):
+    def __init__(self, size, weights = None, biases = None, inputs = None, dropout = None, learning_rate = None):
         self._size = size
         self._layer_type = 'Sparse'
         self._activation_type = 'Linear'
@@ -260,12 +241,10 @@ class sparse_linear_layer:
         # Default to running on GPU, if the sparse model isn't going to fit in GPU memory, you were fucked anyway.
         self._comp_type = 'GPU'
         # Regularization parameters, and learning rates can be set for layers individually
-        self._l2_constant = l2_constant
-        self._l1_constant = l1_constant
         self._learning_rate = learning_rate
         self._dropout = dropout
-        self._rows = self._weights.transpose().tocoo().row
-        self._columns = self._weights.transpose().tocoo().col
+        self._rows = None
+        self._columns = None
     
     @property    
     def get_inputs(self):
@@ -300,6 +279,10 @@ class sparse_linear_layer:
     @property
     def biases(self):
         return self._biases
+    
+    def get_coordinates(self):
+        self._rows = self._weights.tocoo().transpose().row
+        self._columns = self._weights.tocoo().transpose().col
                
     def get_gradients(self, layer_inputs, layer_error):
         grads_shape = self._weights.shape

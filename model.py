@@ -1,5 +1,6 @@
 import numpy as np
 import cupy as cp
+import scipy
 from sparana.layers import sparse_relu_layer
 from sparana.layers import sparse_linear_layer
 from cupy.sparse import coo_matrix
@@ -95,15 +96,15 @@ class model:
             for i in range(len(self._layers)):
                 self._layers[i]._comp_type = 'GPU'
                 if i == 0:
-                    shape = (self._input_size, self._layers[i].size())
+                    shape = (self._input_size, self._layers[i]._size)
                 else:
-                    shape = (self._layers[i-1].size(), self._layers[i].size())
+                    shape = (self._layers[i-1]._size, self._layers[i]._size)
                 if init_method == 'Xavier':
                     self._layers[i]._weights = cp.random.normal(0, np.sqrt(3. / sum(shape)), shape, dtype = np.float32)
-                    self._layers[i]._biases = cp.full(self._layers[i].size(), bias_constant, dtype = np.float32)
+                    self._layers[i]._biases = cp.full(self._layers[i]._size, bias_constant, dtype = np.float32)
                 if type(init_method) == float:
                     self._layers[i]._weights = cp.random.normal(0, init_method)
-                    self._layers[i]._biases = cp.full(self._layers[i].size(), bias_constant)
+                    self._layers[i]._biases = cp.full(self._layers[i]._size, bias_constant)
                 
                 ### TODO
                 ### Check this, load into gpu.
@@ -111,6 +112,31 @@ class model:
             if type(init_method) == list:
                 self._layers[i]._weights = init_method[i][0]
                 self._layers[i]._biases = init_method[i][1]
+        return
+    
+    def initialize_sparse_weights(self, density, init_method = 'Xavier', bias_constant = None):
+        """ This initializes all weights, I might add a module to initialize based on a list of
+        values(normal SDs), one for each layer, but for now I am using Xavier initialization for everything."""
+        print('Initalizing sparse weights')
+        for i in range(len(self._layers)):
+            if i == 0:
+                shape = (self._layers[i]._size, self._input_size)
+            else:
+                shape = (self._layers[i]._size, self._layers[i-1]._size)
+            if init_method == 'Xavier':
+                self._layers[i]._weights = csr_matrix(scipy.sparse.random(shape[0], shape[1], density = density, format = 'csr', dtype = np.float32, data_rvs=np.random.randn)*np.sqrt(3. / sum(shape)))
+                self._layers[i]._biases = cp.full(self._layers[i]._size, bias_constant)
+            # This is just rescaling the initialization by the density. 
+            if init_method == 'Xavier_2':
+                self._layers[i]._weights = csr_matrix(scipy.sparse.random(shape[0], shape[1], density = density, format = 'csr', dtype = np.float32, data_rvs=np.random.randn)*np.sqrt(3. / sum(shape))/density)
+                self._layers[i]._biases = cp.full(self._layers[i]._size, bias_constant)
+            if type(init_method) == float:
+                self._layers[i]._weights = csr_matrix(scipy.sparse.random(shape[0], shape[1], density = density, format = 'csr', dtype = np.float32, data_rvs=np.random.randn)*init_method)
+                self._layers[i]._biases = cp.full(self._layers[i]._size, bias_constant)
+                    
+
+        for layer in self.layers:
+            layer.get_coordinates()
         return
     
     def convert_comp_type(self):
@@ -147,4 +173,7 @@ class model:
                     self._layers[i] = sparse_linear_layer(size = self._layers[i]._size, weights = csr_matrix(self._layers[i]._weights.transpose()), biases = cp.array(self._layers[i]._biases))
             self._layer_type = 'Sparse'
             print('Model is now sparse')
+            for layer in self.layers:
+                layer.get_coordinates()
+            
             return
