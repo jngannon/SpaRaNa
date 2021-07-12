@@ -6,7 +6,9 @@ I am happy for anyone else to use this software, or more likely get some ideas a
 
 This library uses Numpy and CuPy(for GPU operations). 
 
-Soon I will upload a notebook demonstrates how to use this. 
+The Demo-Model notebook demonstrates how to build and train a simple model.
+
+More notebooks will be coming soon to demonstrate other things that the library can do.
 
 About me.
 
