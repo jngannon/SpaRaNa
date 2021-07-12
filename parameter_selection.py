@@ -1,4 +1,5 @@
 import numpy as np
+import cupy as cp
 
 def get_k_min(array_list, k_ratio):
     """ Returns the indices of the K lowest values in a matrix"""
@@ -26,8 +27,13 @@ def get_k_biggest(array_list, k_ratio):
     """ Returns the indices of the K highest values in a matrix"""
     return_list = []
     for i in array_list:
-        k_parameters = int(i.size*k_ratio)
-        indices =  np.argsort(np.abs(i).flatten())[-k_parameters:]
+        if isinstance(i, cp.ndarray):
+            j = cp.asnumpy(i)
+            k_parameters = int(j.size*k_ratio)
+            indices =  np.argsort(np.abs(j).flatten())[-k_parameters:]
+        else:
+            k_parameters = int(i.size*k_ratio)
+            indices =  np.argsort(np.abs(i).flatten())[-k_parameters:]
         update = np.vstack(np.unravel_index(indices, i.shape)).tolist()
         update = np.transpose(update)
         return_list.extend([update])
@@ -38,8 +44,13 @@ def get_k_max(array_list, k_ratio):
     """ Returns the indices of the K highest values in a matrix"""
     return_list = []
     for i in array_list:
-        k_parameters = int(i.size*k_ratio)
-        indices =  np.argsort(i.flatten())[-k_parameters:]
+        if isinstance(i, cp.ndarray):
+            j = cp.asnumpy(i)
+            k_parameters = int(j.size*k_ratio)
+            indices =  np.argsort(j.flatten())[-k_parameters:]
+        else:
+            k_parameters = int(i.size*k_ratio)
+            indices =  np.argsort(i.flatten())[-k_parameters:]
         update = np.vstack(np.unravel_index(indices, i.shape)).tolist()
         update = np.transpose(update)
         return_list.extend([update])
@@ -124,3 +135,38 @@ def get_positives(array_list, k_ratio = None):
     for i in array_list:
         positives.append(np.argwhere(np.array(i) > 0))
     return positives
+
+def get_ratio_biggest(array_list, k_ratio, random_ratio):
+    """ Gets a randomly selected ratio of the max values. 0.5 ratio of 0.1 max will get half of the top 10% of values selected at random,
+    So 5% of parameters. k_ratio is the same as other modules, random_ratio is the ratio of the parameters, chosen at random to keep"""
+    return_list = get_k_biggest(array_list, k_ratio)
+                          
+    return
+    
+def get_max_columns(array, columns):
+    """ Just return the list of indices"""
+    these_columns = []
+    argsorted = np.argsort(array.flatten()) 
+    i = 0
+    while len(these_columns) < columns:                  
+        i += 1
+        parameter = argsorted[-i]
+        col = parameter%array.shape[1]
+        if col not in these_columns:
+            these_columns.append(col)    
+    return these_columns
+
+def get_normal_columns(array, columns, std):
+    these_columns = []
+    argsorted = np.argsort(array.flatten())
+    listsize = len(argsorted)
+    while len(these_columns) < columns:               
+        rand = int(np.abs(np.random.normal(0, (std*listsize/2))))
+        while rand > len(argsorted):
+            rand = int(np.abs(np.random.normal(0, (std*listsize/2))))
+        
+        parameter =  argsorted[-rand]
+        col = parameter%array.shape[1]
+        if col not in these_columns:
+            these_columns.append(col)    
+    return these_columns
