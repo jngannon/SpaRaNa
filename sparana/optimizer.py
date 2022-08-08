@@ -2,7 +2,7 @@ import numpy as np
 import cupy as cp
 from sparana.parameter_selection import get_k_max
 
-def get_gradients(opt, inputs, labels, backward_layers = None, loss_function = 'MSE'):
+def get_gradients(opt, inputs, labels, coordinates = None, backward_layers = None, loss_function = 'MSE'):
     
     outputs = opt._model.outputs(inputs)
     # This is hard coded quadratic error. The error for the softmax is built in here for reasons.
@@ -22,29 +22,33 @@ def get_gradients(opt, inputs, labels, backward_layers = None, loss_function = '
         backward_layers = len(opt._model.layers)
     
     for i in range(backward_layers):
-            
+        
+        # All the layers after the first layer, gradients are calculated the same way.
+        
         if i < len(opt._model.layers)-1:
             # For the last layer, feed in the error calculated from the outputs, for the middle layers
             # feed in the error from the following layer, and outputs from the previous layer
                 
             if opt._model._layer_type == 'Full':
-                weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(opt._model.layers[-2-i]._outputs, error*opt._model.layers[-1-i]._relu)
+                weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(opt._model.layers[-2-i]._outputs, error)
             if opt._model._layer_type == 'Sparse':
                 if opt._model.layers[-1-i]._activation_type == 'Relu':
-                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(opt._model.layers[-2-i]._outputs, error*(opt._model.layers[-1-i]._relu.transpose()))
+                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(opt._model.layers[-2-i]._outputs, error*(opt._model.layers[-1-i]._relu.transpose()), coordinates[-1-i])
                 if opt._model.layers[-1-i]._activation_type == 'Linear':
-                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(opt._model.layers[-2-i]._outputs, error)
+                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(opt._model.layers[-2-i]._outputs, error*opt._model.layers[-1-i]._relu, coordinates[-1-i])
                 
             gradients.append((weight_gradients, bias_gradients))
+        
+        # For the first layer, need the inputs instead of the previous layers outputs.
+        
         if i == len(opt._model.layers)-1:
-            # For the first layer, feed in the error from the following layer, and the inputs
             if opt._model._comp_type == 'CPU':
                 weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(inputs, error*opt._model.layers[-1-i]._relu)
             if opt._model._comp_type == 'GPU':
                 if opt._model._layer_type == 'Full':
-                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(cp.array(inputs), error*opt._model.layers[-1-i]._relu)
+                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(cp.array(inputs), error) #*opt._model.layers[-1-i]._relu)
                 if opt._model._layer_type == 'Sparse':
-                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(cp.array(inputs.transpose()), error*(opt._model.layers[-1-i]._relu.transpose()))
+                    weight_gradients, bias_gradients, error = opt._model.layers[-1-i].get_gradients(cp.array(inputs.transpose()), error*(opt._model.layers[-1-i]._relu.transpose()), coordinates[-1-i])
             gradients.append((weight_gradients, bias_gradients))
         
     # Gradients are appended in reverse order, reverse this to simplify applying training step
@@ -105,10 +109,26 @@ class sgd_optimizer:
         self._learning_rate = learning_rate
         self._gradients = []
         self._l2_constant = l2_constant
-        self._l1_constant = l1_constant    
-
+        self._l1_constant = l1_constant
+        if self._model._layer_type == 'Sparse':
+            self._sparse_coords = []
+            for layer in self._model.layers:
+                temp = layer._weights.tocoo()
+                self._sparse_coords.append(cp.array([(i, j) for i, j in zip(cp.asnumpy(temp.row), cp.asnumpy(temp.col))]))
+                temp = None
+    
+    def get_gradients(self, inputs, labels):
+        if self._model._layer_type == 'Full':
+            grads = get_gradients(self, inputs, labels)
+        if self._model._layer_type == 'Sparse':
+            grads = get_gradients(self, inputs, labels, self._sparse_coords)
+        return grads
+    
     def train_step(self, inputs, labels):
-        grads = get_gradients(self, inputs, labels)
+        if self._model._layer_type == 'Full':
+            grads = get_gradients(self, inputs, labels)
+        if self._model._layer_type == 'Sparse':
+            grads = get_gradients(self, inputs, labels, self._sparse_coords)
         for i in range(len(grads)):
             if self._model._layer_type == 'Full':
                 
@@ -280,6 +300,12 @@ class adam_optimizer:
         self._gradients = []
         self._l2_constant = l2_constant
         self._l1_constant = l1_constant
+        if self._model._layer_type == 'Sparse':
+            self._sparse_coords = []
+            for layer in self._model.layers:
+                temp = layer._weights.tocoo()
+                self._sparse_coords.append(cp.array([(i, j) for i, j in zip(cp.asnumpy(temp.row), cp.asnumpy(temp.col))]))
+                temp = None
         if self._model._comp_type == 'CPU':
             if self._model._layer_type == 'Full':
                 self._weight_m1 = [np.zeros(i._weights.shape) for i in self._model.layers]
@@ -296,16 +322,20 @@ class adam_optimizer:
                 self._weight_m2 = [cp.zeros(i._weights.shape) for i in self._model.layers]
                 self._bias_m2 = [cp.zeros(i._biases.shape) for i in self._model.layers]
             if self._model._layer_type == 'Sparse':
-                stats = []
-                print('Sparse Adam not implemented yet')
+                self._weight_m1 = [cp.zeros((i._weights.nnz)) for i in self._model.layers]
+                self._bias_m1 = [cp.zeros(i._biases.shape) for i in self._model.layers]
+                self._weight_m2 = [cp.zeros((i._weights.nnz)) for i in self._model.layers]
+                self._bias_m2 = [cp.zeros(i._biases.shape) for i in self._model.layers]
         self._timestep = 0
         # Bitmasks for training only on selected parameters, input as full matrices stored on the same device as the weight matrix.
         self._bitmasks = bitmasks
-                
-    
-
+        
     def train_step(self, inputs, labels, train_biases = True):
-        grads = get_gradients(self, inputs, labels)
+        if self._model._layer_type == 'Full':
+            grads = get_gradients(self, inputs, labels)
+        if self._model._layer_type == 'Sparse':
+            grads = get_gradients(self, inputs, labels, self._sparse_coords)
+        
         grads = [(np.clip(i[0], -1, 1), np.clip(i[1], -1, 1)) for i in grads]
         if self._bitmasks:
             for i in range(len(grads)):
@@ -358,7 +388,7 @@ class adam_optimizer:
 class selected_adam_optimizer:
     
     """ Adam optimizer with quadratic cost function. This one optimizes over a selection of parameters, not optimized for speed yet, just using bitmasks and such. Inputs a list of parameters that will be updated."""
-    def __init__(self, model, learning_rate, beta1 = 0.9, beta2 = 0.999, epsilon = 10e-8, l1_constant = None, l2_constant = None, backward_layers = None):
+    def __init__(self, model, learning_rate, beta1 = 0.9, beta2 = 0.999, epsilon = 10e-8, l1_constant = None, l2_constant = None, backward_layers = None, train_final_layer = False):
         self._model = model
         self._learning_rate = learning_rate
         self._beta1 = beta1
@@ -371,6 +401,9 @@ class selected_adam_optimizer:
             self._backward_layers = len(self._model.layers)
         else:
             self._backward_layers = backward_layers
+        self._train_final_layer = train_final_layer
+        if train_final_layer:
+            self._backward_layers = 1
         self._weight_m1 = []
         self._bias_m1 = []
         self._weight_m2 = []
@@ -400,13 +433,17 @@ class selected_adam_optimizer:
                 
     def train_step(self, inputs, labels, layers = None, train_biases = True):
         
-        grads = get_gradients(self, inputs, labels, self._backward_layers)
+        grads = get_gradients(self, inputs, labels, backward_layers = self._backward_layers)
                         
         grads = [(np.clip(i[0], -1, 1), np.clip(i[1], -1, 1)) for i in grads]
         # Multiply gradients by the sparse bitmasks
-        for i in range(len(grads)):
-            grads[-(i+1)] = (np.multiply(grads[-(i+1)][0], self._model.layers[-(i+1)]._sparse_training_mask), grads[-(i+1)][1])
+        if self._train_final_layer == False:
+            for i in range(len(grads)):
+                
+                grads[-(i+1)] = (np.multiply(grads[-(i+1)][0], self._model.layers[-(i+1)]._sparse_training_mask), grads[-(i+1)][1])
+        
         self._timestep += 1
+        
         co_learning_rate = self._learning_rate*(np.sqrt(1 - self._beta2**self._timestep)/(1-self._beta1**self._timestep))
                 
         for i in range(self._backward_layers):
@@ -453,7 +490,8 @@ class selected_adam_optimizer:
                 if not self._l1_constant and not self._l2_constant:
                     self._model.layers[-(i+1)]._weights.data += self._learning_rate*grads[-(i+1)][0]
                     self._model.layers[-(i+1)]._biases += self._learning_rate*grads[-(i+1)][1]
-                    
+        return grads
+        
 class subnet_finder:
     
     """ First attempt at building an optimizer, only uses quadratic cost function. There are parts to this that could be built into 

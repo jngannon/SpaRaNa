@@ -5,7 +5,7 @@ from sparana.layers import sparse_relu_layer
 from sparana.layers import sparse_linear_layer
 from cupy.sparse import coo_matrix
 from cupy.sparse import csr_matrix
-
+from sparana.saver import model_saver
 
 class model:
     
@@ -14,9 +14,10 @@ class model:
         self._layers = layers
         # Can set the dropout value for the whole network.
         self._dropout = dropout
+        self._comp_type = comp_type
         for layer in self._layers:
             layer._dropout = self._dropout
-        self._comp_type = comp_type
+            layer._comp_type = self._comp_type
         self._depth = len(layers)
         # Infer layers type from first layer, important here for transposing the input/output
         # Not planning to use mixed(full, and sparse) layers.
@@ -74,7 +75,14 @@ class model:
         
     def one2ratio(self, inputs):
         # Returns a vector of 1-2 ratios
-        return
+        outputs = self.outputs(inputs)
+        outputs = [float(j[-1]/j[-2]) for j in [np.sort(i) for i in outputs]]
+        return outputs
+    
+    def softmax_output(self, inputs):
+        outputs = self.outputs(inputs)
+        outputs = outputs/(np.sum(outputs, axis = 1)).reshape(len(outputs), 1)
+        return outputs
         
     def load_weights(self, weight_list):
         """ Load from a list of [(weight, bias), (weight, bias)]"""
@@ -83,6 +91,9 @@ class model:
     def initialize_weights(self, init_method, bias_constant = None):
         """ This initializes all weights, I might add a module to initialize based on a list of
         values(normal SDs), one for each layer, but for now I am using Xavier initialization for everything."""
+        if self._layers[0]._size == None:
+            print('You need to define layer sizes to initialize')
+            return
         if self._comp_type == 'CPU':
             print('Initalizing CPU weights')
             for i in range(len(self._layers)):
@@ -204,11 +215,17 @@ class model:
             
             return
         
-    def remove_activations(self):
+    def remove_activations(self, restore_parameters = False):
         """This module removes rows from weight matrices when all of their values are 0. Only for full layers not sparse."""
         for i in range(self._depth-1):
             zeros = cp.asnumpy(np.sum(np.abs(self.layers[i]._weights), axis = 0))
-            zero_indices = np.where(zeros == 0)[0]
+            next_zeros = cp.asnumpy(np.sum(np.abs(self.layers[i+1]._weights), axis = 1)) 
+            zeros = np.multiply(zeros , next_zeros)
+            zero_indices = np.where(zeros == 0)[0]  
+            # This is the way this is because it is the order that I built it. Don't worry about it.
+            if restore_parameters:
+                if not isinstance(restore_parameters, model_saver):
+                    self.layers[i]._weights = cp.array(restore_parameters._model_arrays[i][0])
             if len(zero_indices)>0:
                 #Indices of parameters to keep
                 keep_indices = np.where(zeros != 0)[0]
@@ -217,17 +234,23 @@ class model:
                 #Biases to be consolidated into the biases of the next layer\                
                 zero_biases = self.layers[i]._biases[zero_indices]
                 #Remove the biases that need yeeting
-                self.layers[i]._biases = self.layers[i]._bises[keep_indices]
+                self.layers[i]._biases = self.layers[i]._biases[keep_indices]
                 #Values of the biases that would have been passed to the next layer
-                relu_biases = (np.max(self.layers[i]._biases, 0))[zero_indices]
+                relu_biases = np.maximum(self.layers[i]._biases[zero_indices], 0)
                 #Dot product of biases to be consolidated and associated weight columns of following layer
-                add_to_next = np.dot(relu_biases, self.layers[i+1]._weights[zero_indices,:])
+                add_to_next = np.dot(relu_biases, self.layers[i+1]._weights[zero_indices, :])
                 #Remove columns associated with consolidated biases from following layer
-                self.layer[i+1]._weights = self.layers[i+1]._weights[keep_indices,:]
+                self.layers[i+1]._weights = self.layers[i+1]._weights[keep_indices,:]
                 #Add the dot product, which remains constant regardless of input, to the following layers biases.
-                self.layers[i+1].biases = np.add(add_to_next, self.layers[i+1]._biases)
-        else:
-            print ('layer',i+1,'No activations removed')
-        print('Activations removed, final layer sizes:')
-        print('fix this bit up later')
+                self.layers[i+1]._biases = np.add(add_to_next, self.layers[i+1]._biases)
+            else:
+                print ('layer',i+1,'No activations removed')
         return
+    
+    def parameter_count(self):
+        '''What is says on the box, returns a total number of parameters.'''
+        size = 0
+        for i in self._layers:
+            size += i._weights.shape[0]*i.weights._weights.shape[1]
+            size += len(i._biases)
+        return size

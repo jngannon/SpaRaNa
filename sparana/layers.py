@@ -6,12 +6,12 @@ from sparana.numba_functions import sparse_coordinate_matmul
 
 class full_relu_layer:
     
-    def __init__(self, size, inputs = None, dropout = None, learning_rate = None):
+    def __init__(self, size = None, inputs = None, dropout = None, learning_rate = None, weights = None, biases = None):
         self._size = size
         self._layer_type = 'Full'
         self._activation_type = 'Relu'
-        self._weights = None
-        self._biases = None
+        self._weights = weights
+        self._biases = biases
         self._relu = None
         self._outputs = None
         self._comp_type = 'GPU'
@@ -51,21 +51,19 @@ class full_relu_layer:
     
     def activate(self, inputs):
         if self._comp_type == 'GPU':
-            if self._dropout:
-                # Dropout masks are reset with every forward pass to be reused for calculating gradients.
-                self._dropout_mask = cp.random.binomial(1, 1-self._dropout, size = self._weights.shape)
-                self._outputs = cp.dot(inputs, self._weights*self._dropout_mask)
-            else:
-                self._outputs = cp.dot(inputs, self._weights)
+            self._outputs = cp.dot(inputs, self._weights)
         if self._comp_type == 'CPU':
-            if self._dropout:
-                self._dropout_mask = np.random.binomial(1, 1-self._dropout, size = self._weights.shape)
-                self._outputs = inputs@(self._weights*self._dropout_mask)
-            else:
-                self._outputs = inputs@self._weights
+            self._outputs = inputs@self._weights
         self._outputs = self._outputs + self._biases
         self._relu = self._outputs>0
         self._outputs = self._outputs*self._relu
+        # Apply dropout to the outputs of this layer
+        if self._dropout:
+            if self._comp_type == 'CPU':
+                self._dropout_mask = np.random.binomial(1, 1-self._dropout, size = self._outputs.shape)
+            if self._comp_type == 'GPU':
+                self._dropout_mask = cp.random.binomial(1, 1-self._dropout, size = self._outputs.shape)
+            self._outputs = self._outputs*self._dropout_mask
         return self._outputs
     
     def activate_weights(self, inputs):
@@ -89,23 +87,18 @@ class full_relu_layer:
     
     def get_gradients(self, layer_inputs, layer_error):
         ''' Returns an array for weights, and biases, and one for the previous layer'''
+        if self._dropout:
+            layer_error = layer_error*self._dropout_mask
         if self._comp_type == 'CPU':
             layer_error = layer_error*self._relu
             bias_gradients = np.sum(layer_error, axis = 0)
             weight_gradients = layer_inputs.transpose()@(layer_error)
-            if self._dropout:
-                previous_layer_error = layer_error@(self._dropout_mask*self._weights).transpose()
-            else:
-                previous_layer_error = layer_error@self._weights.transpose()
+            previous_layer_error = layer_error@self._weights.transpose()
         if self._comp_type == 'GPU':
             layer_error = layer_error*self._relu
             bias_gradients = cp.sum(layer_error, axis = 0)
             weight_gradients = cp.dot(layer_inputs.transpose(), layer_error)
-            if self._dropout:
-                previous_layer_error = cp.dot(layer_error, (self._dropout_mask*self._weights).transpose())
-            else:
-                previous_layer_error = cp.dot(layer_error, self._weights.transpose())
-            
+            previous_layer_error = cp.dot(layer_error, self._weights.transpose())    
         return weight_gradients, bias_gradients, previous_layer_error
     
     def get_selected_gradients(self, layer_inputs, layer_error, parameters):
@@ -130,7 +123,7 @@ class full_relu_layer:
                 
 class full_linear_layer:
     
-    def __init__(self, size, inputs = None, dropout = None, learning_rate = None):
+    def __init__(self, size = None, inputs = None, dropout = None, learning_rate = None):
         self._size = size
         self._layer_type = 'Full'
         self._activation_type = 'Linear'
@@ -147,7 +140,6 @@ class full_linear_layer:
         if self._comp_type == 'GPU' and dropout:
             self._dropout_mask = cp.random.binomial(1, 1-self._dropout, size = self._weights.shape)
         self._sparse_training_mask = None
-        
             
     def layer_type(self):
         return self._layer_type
@@ -221,7 +213,7 @@ class full_linear_layer:
                 previous_layer_error = cp.dot(layer_error, (self._dropout_mask*self._weights).transpose())
             else:
                 previous_layer_error = cp.dot(layer_error, self._weights.transpose())
-            
+        
         return weight_gradients, bias_gradients, previous_layer_error
         
     def convert_comp_type(self):
@@ -237,10 +229,10 @@ class full_linear_layer:
 
 class full_softmax_layer:
     
-    def __init__(self, size, inputs = None, dropout = None, learning_rate = None):
+    def __init__(self, size = None, inputs = None, dropout = None, learning_rate = None):
         self._size = size
         self._layer_type = 'Full'
-        self._activation_type = 'Linear'
+        self._activation_type = 'Softmax'
         self._weights = None
         self._biases = None
         self._relu = 1
@@ -318,6 +310,10 @@ class full_softmax_layer:
     
     def get_gradients(self, layer_inputs, layer_error):
         ''' Returns an array for weights, and biases, and one for the previous layer'''
+        
+        if self._dropout:
+            layer_error = layer_error*self._dropout_mask
+        
         if self._comp_type == 'CPU':
             bias_gradients = np.sum(layer_error, axis = 0)
             weight_gradients = layer_inputs.transpose()@(layer_error)
@@ -355,8 +351,6 @@ class sparse_relu_layer:
         self._activation_type = 'Relu'
         self._weights = weights
         self._biases = biases
-        self._dot_product = None
-        self._add_biases = None
         self._relu = None
         self._outputs = None
         # Default to running on GPU, if the sparse model isn't going to fit in GPU memory, you were fucked anyway.
@@ -364,10 +358,7 @@ class sparse_relu_layer:
         # Regularization parameters, and learning rates can be set for layers individually
         self._learning_rate = learning_rate
         self._dropout = dropout
-        self._rows = None
-        self._columns = None
-                
-
+        self._weight_gradients = None        
     
     @property    
     def get_inputs(self):
@@ -375,13 +366,13 @@ class sparse_relu_layer:
        
     def activate(self, inputs):
         if self._comp_type == 'GPU':
-            self._dot_product = self._weights.dot(inputs)
+            self._outputs = self._weights.dot(inputs)
         if self._comp_type == 'CPU':
             # use the @ operator
-            self._dot_product = inputs@self._weights
-        self._add_biases = self._dot_product + self._biases[: , np.newaxis]
-        self._relu = self._add_biases>0
-        self._outputs = self._add_biases*self._relu
+            self._outputs = inputs@self._weights
+        self._outputs = self._outputs + self._biases[: , np.newaxis]
+        self._relu = self._outputs>0
+        self._outputs = self._outputs*self._relu
         return self._outputs
 
     @property
@@ -407,13 +398,22 @@ class sparse_relu_layer:
         self._rows = self._weights.tocoo().transpose().row
         self._columns = self._weights.tocoo().transpose().col
     
-    def get_gradients(self, layer_inputs, layer_error):
+    def get_gradients(self, layer_inputs, layer_error, coordinates):
+        #if self._weight_gradients is None:
+        self._weight_gradients = cp.zeros(self._weights.nnz)
         grads_shape = self._weights.shape
         layer_error = layer_error*(self._relu.transpose())
         bias_gradients = cp.sum(layer_error, axis = 0)
         previous_layer_error = self._weights.transpose().dot(layer_error.transpose()).transpose()
-        weight_gradients = sum(layer_inputs[self._rows,:].transpose()*layer_error[:,self._columns])
-           
+        
+        tpb = 512
+        bpg_x = int(coordinates.shape[0] /tpb)
+        
+        #sparse_coordinate_matmul[tpb, 200](layer_inputs, layer_error, self._weight_gradients, coordinates)
+        
+        #weight_gradients = sum(layer_inputs[self._rows,:].transpose()*layer_error[:,self._columns])
+        weight_gradients = cp.dot(layer_inputs, layer_error)
+        
         return weight_gradients, bias_gradients, previous_layer_error
 
 class sparse_linear_layer:
@@ -424,9 +424,7 @@ class sparse_linear_layer:
         self._activation_type = 'Linear'
         self._weights = weights
         self._biases = biases
-        self._dot_product = None
-        self._add_biases = None
-        self._relu = None
+        self._relu = 1
         self._outputs = None
         # Default to running on GPU, if the sparse model isn't going to fit in GPU memory, you were fucked anyway.
         self._comp_type = 'GPU'
@@ -435,26 +433,26 @@ class sparse_linear_layer:
         self._dropout = dropout
         self._rows = None
         self._columns = None
-    
+        self._weight_gradients = None
+            
     @property    
     def get_inputs(self):
         return self._inputs
        
     def activate(self, inputs):
         if self._comp_type == 'GPU':
-            self._dot_product = self._weights.dot(inputs)
+            self._outputs = self._weights.dot(inputs)
         if self._comp_type == 'CPU':
             # use the @ operator
-            self._dot_product = inputs@self._weights
-        self._add_biases = self._dot_product + self._biases[: , np.newaxis]
-        self._outputs = self._add_biases
+            self._outputs = inputs@self._weights
+        self._outputs = self._outputs + self._biases[: , np.newaxis]
         return self._outputs
 
     @property
     def softmax_activate(self):
-        dot_product = self._inputs@self._weights
-        add_biases = dot_product + self._biases
-        softmax = np.array([[np.exp(i)/sum([np.exp(j) for j in k]) for i in k] for k in add_biases])
+        self._outputs = self._inputs@self._weights
+        self._outputs = self._outputs + self._biases
+        softmax = np.array([[np.exp(i)/sum([np.exp(j) for j in k]) for i in k] for k in self._outputs])
         return softmax
         
     @property
@@ -474,12 +472,23 @@ class sparse_linear_layer:
         self._rows = self._weights.tocoo().transpose().row
         self._columns = self._weights.tocoo().transpose().col
                
-    def get_gradients(self, layer_inputs, layer_error):
+    def get_gradients(self, layer_inputs, layer_error, coordinates):
+        if self._weight_gradients is None:
+            self._weight_gradients = cp.zeros(self._weights.nnz)
+
         grads_shape = self._weights.shape
         bias_gradients = cp.sum(layer_error, axis = 0)
+        
         previous_layer_error = self._weights.transpose().dot(layer_error.transpose()).transpose()
-        weight_gradients = sum(layer_inputs[self._rows,:].transpose()*layer_error[:,self._columns])
-           
+       
+        tpb = 512
+        bpg_x = int(coordinates.shape[0] /tpb)
+        
+        #sparse_coordinate_matmul[tpb, 200](layer_inputs, layer_error, self._weight_gradients, coordinates)
+        
+        #weight_gradients = sum(layer_inputs[self._rows,:].transpose()*layer_error[:,self._columns])
+        weight_gradients = cp.dot(layer_inputs, layer_error)
+        
         return weight_gradients, bias_gradients, previous_layer_error
 
         

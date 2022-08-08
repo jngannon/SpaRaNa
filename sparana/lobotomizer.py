@@ -4,7 +4,9 @@ from scipy.sparse import coo_matrix
 from scipy.sparse import csr_matrix
 from sparana.parameter_selection import get_k_biggest
 from sparana.parameter_selection import get_k_smallest
+from sparana.parameter_selection import get_normal_high
 from sparana.model import model
+from sparana.layers import full_relu_layer
 
 def get_MAV_module(lobo, data):
     ''' This will run and store the mean activated values in the metric matrices in the class, sorts the list or whatever'''
@@ -58,7 +60,9 @@ def get_MAAV_module(lobo, data):
                     lobo._weight_stats[layer_count] += abs(coo_matrix(cp.asnumpy(layer.activate_weights(this_layer_inputs))))
                 if lobo._lobo_type == 'parameter_selector':
                     lobo._weight_stats[layer_count] += abs(cp.asnumpy(layer.activate_weights(this_layer_inputs)))
-            output = layer.activate(this_layer_inputs)
+            #This is easier than trying to fix a reshape problem for an output I don't need to see
+            if layer._activation_type != 'Softmax':
+                output = layer.activate(this_layer_inputs)
             this_layer_inputs = output
             layer_count += 1
         if lobo._model._layer_type == 'Sparse':
@@ -173,7 +177,7 @@ class lobotomizer:
         return
             
     
-    def prune_smallest(self, prune_ratio = None, print_stats = False, layers = None):
+    def prune_smallest(self, prune_ratio = None, print_stats = False, layers = None, prune_final_layer = False):
         ''' Prunes the weights in the model class.
         Using the smallest values from weight stats to prune.
         Sparse matrices will be reconstructed and assigned to the layer classes.
@@ -215,7 +219,11 @@ class lobotomizer:
                             
         if not layers:
             # Not pruning the last layer, the model begins to fail quickly when this layer is pruned.
-            for i in range(len(self._model.layers)-1):
+            if prune_final_layer == True:
+                final_layer = 0
+            if prune_final_layer == False:
+                final_layer = 1
+            for i in range(len(self._model.layers)-final_layer):
                 
                 if self._model._layer_type == 'Sparse' and self._model._comp_type == 'GPU':
                     # Copy weight matrix to CPU ram as a COO matrix
@@ -301,60 +309,103 @@ class vulcanizer:
     
     def split_model(self, sizes, new_last_layer = False):
         ''' splits the model, returns a submodel, the sizes input is an array of the sizes of the final *x* layers.
-        Define the last layer, it should be the same number of classes as the original. If there are 10 classes, the sizes array should look something like [50, 50, 10]. I dont have the new_last_layer bit built yet, this is a reminder, because I might want to.'''
+        Define the last layer, it should be the same number of classes as the original. If there are 10 classes, the sizes array should look something like [50, 50, 10]. I dont have the new_last_layer bit built yet, this is a reminder, because I might want to.
+        
+        I am writing all of these operations explicitly and operating on new variables, this is for my own clarity.'''
+        
         start = len(self._weight_stats) - len(sizes)        
         these_layers = []
+        these_biases = []
+
         
         if len(self._mean_zeros) == 0:
             print ('You need to run get_average_zeros')
             return
+       
         
         for i in range(len(sizes)):
-            if self._model._comp_type == 'GPU'
-            these_layers.append(cp.asnumpy(self._model.layers[start+i]._weights))
-            else
-            these_layers.append(self._model.layers[start+i]._weights)
+            if self._model._comp_type == 'GPU':
+                these_layers.append(cp.asnumpy(self._model.layers[start+i]._weights))
+                biases.append(cp.asnumpy(self._model.layers[start+i]._biases))
+            else:
+                these_layers.append(self._model.layers[start+i]._weights)
+                these_biases.append(self._model.layers[start+i]._biases)
         
         for i in range(len(sizes)-1):
-            these_weights = these_layers[i]
-            
-            # Get the max things here...
-            if self._activation_selection = 'max':
+                       
+            # Get the indices of the max parameters/values
+            if self._activation_selection == 'max':
                 indices = get_max_columns(these_layers[i], sizes[i])
-            if self._activation_selection = 'normal':
-                indices = get_normal_columns(these_lkayers[i], sizes[i], self._std)
+            if self._activation_selection == 'normal':
+                indices = get_normal_columns(these_layers[i], sizes[i], self._std)
+            #if self._activation_selection == 'uniform':
+                #Just a RNG, could implement it here, don't need to sort anything. 
+            
             self._coordinates.append(indices)
+            
+            # Indices of rows to be removed
+            remove_these = np.delete(np.arange(these_layers[i].shape[1], indices))
+                                     
+            new_weights = np.delete(these_layers[i], remove_these, axis = 1)
                         
-            # Get the means of the other stuff here
-            these_layers[i] = np.delete(these_layers[i], axis = 1)
+            # Get the means of the removed rows
+            means = np.delete(these_layers[i], indices, axis = 1)
+            means = np.mean(means, axis = i)
             
-            these_layers[i+1] = np.delete(these_layers[i], axis = 0)
+            # Append the means to the new weights
+            new_weights = np.append(new_weights.T, [means*len(remove_these)*self._mean_zeros[i]], axis = 0).T
             
-            # Construct the to-be weight arrays here
+            # Put this array back into these_layers
+            these_layers[i] = new_weights
             
-            # Create the layer objects here
-            if this_layer = 
+            #Do all of the same operations with the axes flipped, to append you need to transpose twice.
+            next_new_weights = np.delete(these_layers[i+1], remove_these, axis = 0)
+            next_new_means = np.delete(these_layers[i+1], indices, axis = 0)
+            next_new_means = np.mean(next_new_means, axis = 0)
+            next_new_weights = np.append(next_new_weights, [next_new_means], axis = 0)
+            these_layers[i+1] = next_new_weights
+            
+            # Now do the biases
+            these_biases[i] = np.delete(these_biases[i], remove_these)
+            
+        
+        # I need a new loop here to go through all of the layers, the last loop was not long enough
+        for i in range(len(these_layers)):
+            if mymodel.layers[i]._layer_type == 'Full':
+                if mymodel.layers[i]._activation_type == 'Relu':
+                    if mymodel.layers[i]._comp_type == 'CPU':
+                        these_layers[i] = full_relu_layer(size = these_layers[i].shape[1], weights = these_layers[i], biases = these_biases[i])
+                    if mymodel.layers[i]._comp_type == 'GPU':
+                        these_layers[i] = full_relu_layer(size = these_layers[i].shape[1], weights = cp.array(these_layers[i]), biases = cp.array(these_biases[i]))
+                if mymodel.layers[i]._activation_type == 'Linear':
+                    if mymodel.layers[i]._comp_type == 'CPU':
+                        these_layers[i] = full_linear_layer(size = these_layers[i].shape[1], weights = these_layers[i], biases = these_biases[i])
+                    if mymodel.layers[i]._comp_type == 'GPU':
+                        these_layers[i] = full_linear_layer(size = these_layers[i].shape[1], weights = cp.array(these_layers[i]), biases = cp.array(these_biases[i]))
+                if mymodel.layers[i]._activation_type == 'Softmax':
+                    if mymodel.layers[i]._comp_type == 'CPU':
+                        these_layers[i] = full_softmax_layer(size = these_layers[i].shape[1], weights = these_layers[i], biases = these_biases[i])
+                    if mymodel.layers[i]._comp_type == 'GPU':
+                        these_layers[i] = full_Softmax_layer(size = these_layers[i].shape[1], weights = cp.array(these_layers[i]), biases = cp.array(these_biases[i]))    
+            if mymodel.layers[i]._layer_type == 'Sparse':
+                print('Sparse not implemented yet')
+                break
         
         # Put the models in here
-        newmodel = model(input_size = None,
+        self._submodel = model(input_size = None,
                          layers = these_layers,
-                         comp_type = 'GPU')
-        
-        for i in these_layers:
-            #put the weight arrays in here
-        
-        self._submodel = newmodel
-        
-        return newmodel
+                         comp_type = 'GPU')        
+
+        return self._submodel
     
     def mind_meld(self):
         ''' returns the parameters into the original model'''
         return
     
     def revert_weights(self):
-        ''' This is to return the consolidated weights to their original state after a training step''' 
+         ''' This is to return the consolidated weights to their original state after a training step''' 
         
-        return
+         return
     
 class parameter_selector:
     
@@ -397,12 +448,14 @@ class parameter_selector:
         get_absolute_values_module(self)
         return
     
-    def get_top(self, ratio, number = None, layers = None, subset = None):
+    def get_top(self, ratio = None, number = None, layers = None, subset = None):
         ''' Returns the top k parameters, inputs should be either lists, or a single number.'''
         # Loop over the weight stats, get the top, store in the layer class and free up the space with weight_stat = None
         if not layers:
             for i in range(len(self._weight_stats)):
-                indices = get_k_biggest([self._weight_stats[i]], ratio)
+                # I have to convert this to a numpy array
+                these_stats = self._weight_stats[i].toarray()
+                indices = get_k_biggest([these_stats], ratio)
                 # Initalize the bitmask
                 self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
                 # Keep track of the ratios
@@ -416,18 +469,22 @@ class parameter_selector:
                             self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
         if layers:
             for i in range(len(layers)):
-                indices = get_k_biggest([self._weight_stats[i]], layers[i])
-                # Initialize the bitmask
-                self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
-                # Keep track of the ratios
-                self._mask_ratios[i] = ratio
-                if not subset:
-                    for j in indices[0]:
-                        self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
-                if subset:
-                    for j in indices[0]:
-                        if self._subsets[i][j[0]][j[1]] == subset:
+                if layers[i] == 0:
+                    self._model.layers[i]._sparse_training_mask = None
+                if layers[i] != 0:
+                    these_stats = self._weight_stats[i].toarray()
+                    indices = get_k_biggest([these_stats], layers[i])
+                    # Initialize the bitmask
+                    self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
+                    # Keep track of the ratios
+                    self._mask_ratios[i] = ratio
+                    if not subset:
+                        for j in indices[0]:
                             self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
+                    if subset:
+                        for j in indices[0]:
+                            if self._subsets[i][j[0]][j[1]] == subset:
+                                self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
         return
     
     def get_bottom(self, ratio, number = None, layers = None, subset = None):
@@ -435,7 +492,8 @@ class parameter_selector:
         # Loop over the weight stats, get the top, store in the layer class and free up the space with weight_stat = None
         if not layers:
             for i in range(len(self._weight_stats)):
-                indices = get_k_smallest([self._weight_stats[i]], ratio)
+                these_stats = self._weight_stats[i].toarray()
+                indices = get_k_smallest([these_stats], ratio)
                 # Initalize the bitmask
                 self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
                 # Keep track of the ratios
@@ -449,18 +507,22 @@ class parameter_selector:
                             self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
         if layers:
             for i in range(len(layers)):
-                indices = get_k_smallest([self._weight_stats[i]], layers[i])
-                # Initialize the bitmask
-                self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
-                # Keep track of the ratios
-                self._mask_ratios[i] = ratio
-                if not subset:
-                    for j in indices[0]:
-                        self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
-                if subset:
-                    for j in indices[0]:
-                        if self._subsets[i][j[0]][j[1]] == subset:
+                if layers[i] == 0:
+                    self._model.layers[i]._sparse_training_mask = None
+                if layers[i] != 0:
+                    these_stats = self._weight_stats[i].toarray()
+                    indices = get_k_smallest([these_stats], ratio)
+                    # Initialize the bitmask
+                    self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
+                    # Keep track of the ratios
+                    self._mask_ratios[i] = ratio
+                    if not subset:
+                        for j in indices[0]:
                             self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
+                    if subset:
+                        for j in indices[0]:
+                            if self._subsets[i][j[0]][j[1]] == subset:
+                                self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
         return
     
     def add_output_class(self, output_class):
@@ -478,9 +540,42 @@ class parameter_selector:
             
         return
     
-    def get_top_gaussian(self, ratio = None, variance = None):
+    def get_top_gaussian(self, ratio = None, std = None, layers = None, subset = None):
         ''' Returns a selection of K parameters chosen from a gaussian distribution centred on the top values.'''
-        
+        # Loop over the weight stats, get the top, store in the layer class and free up the space with weight_stat = None
+        if not layers:
+            for i in range(len(self._weight_stats)):
+                these_stats = self._weight_stats[i].toarray()
+                indices = get_normal_high([these_stats], ratio, std)
+                # Initalize the bitmask
+                self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
+                # Keep track of the ratios
+                self._mask_ratios[i] = ratio
+                if not subset:
+                    for j in indices[0]:
+                        self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
+                if subset:
+                    for j in indices[0]:
+                        if self._subsets[i][j[0]][j[1]] == subset:
+                            self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
+        if layers:
+            for i in range(len(layers)):
+                if layers[i] == 0:
+                    self._model.layers[i]._sparse_training_mask = None
+                if layers[i] != 0:
+                    these_stats = self._weight_stats[i].toarray()
+                    indices = get_normal_high([these_stats], ratio, std)
+                    # Initialize the bitmask
+                    self._model.layers[i]._sparse_training_mask = cp.zeros(self._model.layers[i]._weights.shape)
+                    # Keep track of the ratios
+                    self._mask_ratios[i] = ratio
+                    if not subset:
+                        for j in indices[0]:
+                            self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
+                    if subset:
+                        for j in indices[0]:
+                            if self._subsets[i][j[0]][j[1]] == subset:
+                                self._model.layers[i]._sparse_training_mask[j[0]][j[1]] = 1
         return
     
     def initialize_subsets(self, number_of_subsets):
